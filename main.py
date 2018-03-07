@@ -9,7 +9,7 @@ def convertCoordinate(coordinate):
 
 def main():
     bounds = {}
-    nodes = {}  # lat, lot, used
+    nodes = {}  # {'id': {'lat': str, 'lon': str, used: bool}}
     ways = []  #
 
     for _, element in etree.iterparse('../../osmosis/krasnodar.osm', tag=['bounds', 'node', 'way']):
@@ -19,7 +19,7 @@ def main():
             bounds['maxlat'] = element.get('maxlat')
             bounds['maxlot'] = element.get('maxlon')
         elif element.tag == 'node':
-            nodes[element.get('id')] = [element.get('lat'), element.get('lon'), False]
+            nodes[element.get('id')] = {'lat': element.get('lat'), 'lon': element.get('lon'), 'used': False}
         elif element.tag == 'way':
             rfnodes = []
             for child in element.iter('nd', 'tag'):
@@ -35,10 +35,11 @@ def main():
         nodes_print = []
         for nodeID in way:
             if nodeID in nodes:
-                nodes[nodeID][2] = True
-                nodes_print.append((convertCoordinate(float(nodes[nodeID][1]) - float(bounds['minlon'])),
-                              convertCoordinate(float(nodes[nodeID][0]) - float(bounds['minlat']))))
+                nodes[nodeID]['used'] = True
+                nodes_print.append((convertCoordinate(float(nodes[nodeID]['lon']) - float(bounds['minlon'])),
+                              convertCoordinate(float(nodes[nodeID]['lat']) - float(bounds['minlat']))))
         svg_document.add(svgwrite.shapes.Polyline(nodes_print, fill='none', stroke='black'))
+
     svg_document.save()
 
 
