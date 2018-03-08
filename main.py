@@ -2,6 +2,10 @@ from lxml import etree
 from time import time
 import svgwrite
 import csv
+import numpy as np
+import pandas as pd
+from sys import getsizeof
+
 
 def convertCoordinate(coordinate):
     return coordinate * 1500
@@ -60,20 +64,19 @@ def main():
 
     svg_document.save()
 
-
     for way in ways:
-        if adj_list.get(way[0]):
+        if way[0] in adj_list:
             adj_list[way[0]].append(way[1])
         else:
             adj_list[way[0]] = [way[1]]
         i = 1
         while i < len(way) - 1:
-            if adj_list.get(way[i]):
+            if way[i] in adj_list:
                 adj_list[way[i]].extend([way[i-1], way[i+1]])
             else:
                 adj_list[way[i]] = [way[i-1], way[i+1]]
             i = i + 1
-        if adj_list.get(way[i]):
+        if way[i] in adj_list:
             adj_list[way[i]].append(way[i-1])
         else:
             adj_list[way[i]] = [way[i-1]]
@@ -82,6 +85,18 @@ def main():
         writer = csv.writer(csvfile)
         for ID in adj_list:
             writer.writerow([ID] + adj_list[ID])
+
+    fieldnames = list(adj_list.keys())
+
+
+    with open('adjacency_matrix.csv', 'w') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=[''] + fieldnames)
+        writer.writeheader()
+        for node in fieldnames:
+            written_row = {neighbour: (1 if neighbour in adj_list[node] else 0) for neighbour in fieldnames}
+            written_row[''] = node
+            writer.writerow(written_row)
+
 
 
 

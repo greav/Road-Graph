@@ -2,4 +2,5 @@ venv/
 .idea/
 *.osm
 *.svg
+*.csv
 
