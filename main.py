@@ -3,10 +3,23 @@ from time import time
 import svgwrite
 import csv
 import sys
+import math
 
+def convertCoordinates(lat, lon):
+    radius = 1
+    multiplier = 100000
 
-def convertCoordinate(coordinate):
-    return coordinate * 1500
+    latRad = lat * math.pi / 180
+    lonRad = lon * math.pi / 180
+    x = radius * lonRad
+    y = math.log(math.tan(math.pi / 4 + latRad / 2))
+
+    x *= multiplier
+    y *= multiplier
+    return x, y
+
+# def convertCoordinates(lat, lot):
+#     return lat * 1500, lot * 1500
 
 
 def parse(file):
@@ -83,9 +96,9 @@ def main():
         for nodeID in way:
             if nodeID in nodes:
                 nodes[nodeID]['used'] = True
-                printed_nodes.append((convertCoordinate(float(nodes[nodeID]['lon']) - float(bounds['minlon'])),
-                                      convertCoordinate(float(nodes[nodeID]['lat']) - float(bounds['minlat']))))
-
+                printed_nodes.append((convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
+                                                         float(nodes[nodeID]['lon']) - float(bounds['minlon']))))
+                                    
         svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='black', stroke_width=0.5))
 
     # for nodeID in nodes:
