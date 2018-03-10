@@ -3,18 +3,30 @@ from time import time
 import svgwrite
 import csv
 import sys
+import math
 
+def convertCoordinates(lat, lon):
+    radius = 1
+    multiplier = 1000000
 
-def convertCoordinate(coordinate):
-    return coordinate * 1500
+    latRad = lat * math.pi / 180
+    lonRad = lon * math.pi / 180
+    x = radius * lonRad
+    y = math.log(math.tan(math.pi / 4 + latRad / 2))
+
+    x *= multiplier
+    y *= multiplier
+    return x, y
 
 
 def parse(file):
     bounds = {}     # {'minlat': str, 'minlon': str, 'maxlat': str, 'maxlot': str}
     nodes = {}      # {'id': {'lat': str, 'lon': str, used: bool}}
     ways = []       # [[], ... ,[]]
+    # highways = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary',
+    #             'unclassified', 'residential', 'service', 'road']
     highways = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary',
-                'unclassified', 'residential', 'service', 'road']
+                'unclassified', 'residential', 'road']
 
     for _, element in etree.iterparse(file, tag=['bounds', 'node', 'way']):
         if element.tag == 'bounds':
@@ -55,10 +67,12 @@ def write_adj_list(ways):
         else:
             adj_list[way[i]] = [way[i-1]]
 
-    with open('adjacency_list.csv', 'w') as csvfile:
+    with open('adjacency_list_service.csv', 'w') as csvfile:
         writer = csv.writer(csvfile)
         for ID in adj_list:
             writer.writerow([ID] + adj_list[ID])
+
+    return adj_list
 
 
 def main():
@@ -77,24 +91,23 @@ def main():
 
     svg_time = time()
 
-    svg_document = svgwrite.Drawing(filename='map.svg')
+    svg_document = svgwrite.Drawing(filename='map_service.svg', size=(str(8000)+'px', str(8000)+'px'))
     for way in ways:
         printed_nodes = []
         for nodeID in way:
             if nodeID in nodes:
                 nodes[nodeID]['used'] = True
-                printed_nodes.append((convertCoordinate(float(nodes[nodeID]['lon']) - float(bounds['minlon'])),
-                                      convertCoordinate(float(nodes[nodeID]['lat']) - float(bounds['minlat']))))
-
+                printed_nodes.append((convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
+                                                         float(nodes[nodeID]['lon']) - float(bounds['minlon']))))
+                                    
         svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='black', stroke_width=0.5))
 
-    # for nodeID in nodes:
-    #     if nodes[nodeID]['used']:
-    #         svg_document.add(svgwrite.shapes.Circle(
-    #             center=(convertCoordinate(float(nodes[nodeID]['lon']) - float(bounds['minlon'])),
-    #                     convertCoordinate(float(nodes[nodeID]['lat']) - float(bounds['minlat']))),
-    #             r=0.2, fill='red'))
-
+    for nodeID in nodes:
+        if nodes[nodeID]['used']:
+            svg_document.add(svgwrite.shapes.Circle(
+                center=(convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
+                                            float(nodes[nodeID]['lon']) - float(bounds['minlon']))),
+                r=1, fill='red'))
     svg_document.save()
 
     print('Svg write time: ', time() - svg_time)
@@ -102,22 +115,26 @@ def main():
 
     adj_list_time = time()
 
-    write_adj_list(ways)
+    adj_list = write_adj_list(ways)
 
     print('Adj list write time: ', time() - adj_list_time)
     print('Executing...')
 
+    # adj_matrix_time = time()
+    #
     # fieldnames = list(adj_list.keys())
     #
     #
-    # with open('adjacency_matrix2.csv', 'w') as csvfile:
+    # with open('test.csv', 'w') as csvfile:
     #     writer = csv.DictWriter(csvfile, fieldnames=[''] + fieldnames)
+    #
     #     writer.writeheader()
     #     for node in fieldnames:
-    #         written_row = {}
     #         written_row = {neighbour: 1 for neighbour in adj_list[node]}
     #         written_row[''] = node
     #         writer.writerow(written_row)
+    #
+    # print('Adj matrix time: {} min'.format((time() - adj_matrix_time) / 60))
 
 
 if __name__ == "__main__":
