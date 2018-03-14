@@ -4,10 +4,11 @@ import svgwrite
 import csv
 import sys
 import math
+import os
 
 def convertCoordinates(lat, lon):
     radius = 1
-    multiplier = 1000000
+    multiplier = 500000
 
     latRad = lat * math.pi / 180
     lonRad = lon * math.pi / 180
@@ -48,29 +49,26 @@ def parse(file):
     return bounds, nodes, ways
 
 
-def write_adj_list(ways):
+def write_adj_list(nodes, ways):
     adj_list = {}
-    for way in ways:
-        if way[0] in adj_list:
-            adj_list[way[0]].append(way[1])
-        else:
-            adj_list[way[0]] = [way[1]]
-        i = 1
-        while i < len(way) - 1:
-            if way[i] in adj_list:
-                adj_list[way[i]].extend([way[i-1], way[i+1]])
-            else:
-                adj_list[way[i]] = [way[i-1], way[i+1]]
-            i = i + 1
-        if way[i] in adj_list:
-            adj_list[way[i]].append(way[i-1])
-        else:
-            adj_list[way[i]] = [way[i-1]]
+    for way1 in ways:
+        for nodeID in way1:
+            if nodeID not in nodes:
+                continue
+            for way2 in ways:
+                if way1 != way2 and nodeID in way2:
+                    index = way2.index(nodeID)
+                    left_neighbour, right_neighbour = way2[index-1:index], way2[index+1:index+2]
+                    if nodeID not in adj_list:
+                        adj_list[nodeID] = set()
+                        adj_list[nodeID].update(left_neighbour + right_neighbour)
+                    else:
+                        adj_list[nodeID].update(left_neighbour + right_neighbour)
 
-    with open('adjacency_list_service.csv', 'w') as csvfile:
+    with open('output/adjacency_list.csv', 'w') as csvfile:
         writer = csv.writer(csvfile)
         for ID in adj_list:
-            writer.writerow([ID] + adj_list[ID])
+            writer.writerow([ID] + list(adj_list[ID]))
 
     return adj_list
 
@@ -82,6 +80,9 @@ def main():
     else:
         file = sys.argv[1]
 
+    if not os.path.exists('output'):
+        os.makedirs('output')
+
     parse_time = time()
 
     bounds, nodes, ways = parse(file)
@@ -91,7 +92,9 @@ def main():
 
     svg_time = time()
 
-    svg_document = svgwrite.Drawing(filename='map_service.svg', size=(str(8000)+'px', str(8000)+'px'))
+
+
+    svg_document = svgwrite.Drawing(filename='output/map.svg', size=(str(8000)+'px', str(8000)+'px'))
     for way in ways:
         printed_nodes = []
         for nodeID in way:
@@ -99,38 +102,42 @@ def main():
                 nodes[nodeID]['used'] = True
                 printed_nodes.append((convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
                                                          float(nodes[nodeID]['lon']) - float(bounds['minlon']))))
-                                    
         svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='black', stroke_width=0.5))
 
-    for nodeID in nodes:
-        if nodes[nodeID]['used']:
-            svg_document.add(svgwrite.shapes.Circle(
-                center=(convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
-                                            float(nodes[nodeID]['lon']) - float(bounds['minlon']))),
-                r=1, fill='red'))
-    svg_document.save()
+    # for nodeID in nodes:
+    #     if nodes[nodeID]['used']:
+    #         svg_document.add(svgwrite.shapes.Circle(
+    #             center=(convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
+    #                                         float(nodes[nodeID]['lon']) - float(bounds['minlon']))), r=1, fill='red'))
+    # svg_document.save()
 
-    print('Svg write time: ', time() - svg_time)
-    print('Executing...')
+    # print('Svg write time: ', time() - svg_time)
+    # print('Executing...')
 
     adj_list_time = time()
 
-    adj_list = write_adj_list(ways)
+    adj_list = write_adj_list(nodes, ways)
 
     print('Adj list write time: ', time() - adj_list_time)
     print('Executing...')
 
-    # adj_matrix_time = time()
-    #
-    # fieldnames = list(adj_list.keys())
-    #
-    #
-    # with open('test.csv', 'w') as csvfile:
+    for nodeID in adj_list:
+        if nodeID in nodes and nodes[nodeID]['used']:
+            svg_document.add(svgwrite.shapes.Circle(
+                center=(convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
+                                           float(nodes[nodeID]['lon']) - float(bounds['minlon']))), r=1, fill='red'))
+
+    svg_document.save()
+    adj_matrix_time = time()
+
+    fieldnames = list(adj_list.keys())
+
+    # with open('output/adjacency_matrix.csv', 'w') as csvfile:
     #     writer = csv.DictWriter(csvfile, fieldnames=[''] + fieldnames)
     #
     #     writer.writeheader()
     #     for node in fieldnames:
-    #         written_row = {neighbour: 1 for neighbour in adj_list[node]}
+    #         written_row = {neighbour: (1 if neighbour in adj_list[node] else 0) for neighbour in fieldnames}
     #         written_row[''] = node
     #         writer.writerow(written_row)
     #
