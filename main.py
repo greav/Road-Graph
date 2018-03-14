@@ -1,31 +1,30 @@
 from lxml import etree
 from time import time
+from math import pi, log, tan
 import svgwrite
 import csv
 import sys
-import math
 import os
 
-def convertCoordinates(lat, lon):
+def transformCoordinates(lat, lon):
     radius = 1
-    multiplier = 500000
+    multiplier = 100000
 
-    latRad = lat * math.pi / 180
-    lonRad = lon * math.pi / 180
+    latRad = lat * pi / 180
+    lonRad = lon * pi / 180
     x = radius * lonRad
-    y = math.log(math.tan(math.pi / 4 + latRad / 2))
+    y = log(tan(pi / 4 + latRad / 2))
 
     x *= multiplier
     y *= multiplier
+
     return x, y
 
 
 def parse(file):
     bounds = {}     # {'minlat': str, 'minlon': str, 'maxlat': str, 'maxlot': str}
-    nodes = {}      # {'id': {'lat': str, 'lon': str, used: bool}}
-    ways = []       # [[], ... ,[]]
-    # highways = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary',
-    #             'unclassified', 'residential', 'service', 'road']
+    nodes = {}      # {'id': {'lat': str, 'lon': str, used: bool, ways: []}}
+    ways = {}       # {'id': []}
     highways = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary',
                 'unclassified', 'residential', 'road']
 
@@ -36,39 +35,65 @@ def parse(file):
             bounds['maxlat'] = element.get('maxlat')
             bounds['maxlot'] = element.get('maxlon')
         elif element.tag == 'node':
-            nodes[element.get('id')] = {'lat': element.get('lat'), 'lon': element.get('lon'), 'used': False}
+            nodes[element.get('id')] = {'lat': element.get('lat'), 'lon': element.get('lon'), 'used': False, 'ways': []}
         elif element.tag == 'way':
+            wayID = element.get('id')
             lst_nodesID = []
             for child in element.iter('nd', 'tag'):
                 if child.tag == 'nd':
-                    lst_nodesID.append(child.get('ref'))
+                    childID = child.get('ref')
+                    lst_nodesID.append(childID)
                 elif child.tag == 'tag' and child.get('k') == 'highway' and child.get('v') in highways:
-                    ways.append(lst_nodesID)
+                    for nodeID in lst_nodesID:
+                        if nodeID in nodes:
+                            nodes[nodeID]['ways'].append(wayID)
+                    ways[wayID] = lst_nodesID
+
         element.clear()
 
     return bounds, nodes, ways
 
 
-def write_adj_list(nodes, ways):
+def generateAdjList(nodes, ways):
     adj_list = {}
-    for way1 in ways:
-        for nodeID in way1:
+    for wayID in ways:
+        for nodeID in ways[wayID]:
+            # если узла нет в списке узлов, то переходим к следующему узлу
             if nodeID not in nodes:
                 continue
-            for way2 in ways:
-                if way1 != way2 and nodeID in way2:
-                    index = way2.index(nodeID)
-                    left_neighbour, right_neighbour = way2[index-1:index], way2[index+1:index+2]
-                    if nodeID not in adj_list:
-                        adj_list[nodeID] = set()
-                        adj_list[nodeID].update(left_neighbour + right_neighbour)
-                    else:
-                        adj_list[nodeID].update(left_neighbour + right_neighbour)
+            if len(nodes[nodeID]['ways']) == 1:
+                index = ways[wayID].index(nodeID)
+                if index == 0:
+                    adj_list[nodeID] = {ways[wayID][-1]}
 
-    with open('output/adjacency_list.csv', 'w') as csvfile:
-        writer = csv.writer(csvfile)
-        for ID in adj_list:
-            writer.writerow([ID] + list(adj_list[ID]))
+                elif index == (len(ways[wayID]) - 1):
+                    adj_list[nodeID] = {ways[wayID][0]}
+            elif len(nodes[nodeID]['ways']) > 1:
+                for wayID2 in nodes[nodeID]['ways']:
+                    if wayID2 != wayID:
+                        index = ways[wayID2].index(nodeID)
+                        # left_neighbour, right_neighbour = ways[wayID2][index-1:index], ways[wayID2][index+1:index+2]
+                        for neighbour in ways[wayID2][index-1::-1]:
+                            if neighbour in nodes and len(nodes[neighbour]['ways']) > 1:
+                                if nodeID not in adj_list:
+                                    adj_list[nodeID] = set()
+                                    adj_list[nodeID].add(neighbour)
+                                else:
+                                    adj_list[nodeID].add(neighbour)
+                                break
+                            else:
+                                continue
+
+                        for neighbour in ways[wayID2][index + 1:]:
+                            if neighbour in nodes and len(nodes[neighbour]['ways']) > 1:
+                                if nodeID not in adj_list:
+                                    adj_list[nodeID] = set()
+                                    adj_list[nodeID].add(neighbour)
+                                else:
+                                    adj_list[nodeID].add(neighbour)
+                                break
+                            else:
+                                continue
 
     return adj_list
 
@@ -76,12 +101,13 @@ def write_adj_list(nodes, ways):
 def main():
 
     if len(sys.argv) == 1:
-        file = '/home/victor/osmosis/krasnodar.osm'
+        print('There are no input data!')
+        sys.exit()
     else:
         file = sys.argv[1]
 
-    if not os.path.exists('output'):
-        os.makedirs('output')
+    if not os.path.exists('result'):
+        os.makedirs('result')
 
     parse_time = time()
 
@@ -90,58 +116,55 @@ def main():
     print('Parse time: ', time() - parse_time)
     print('Executing...')
 
-    svg_time = time()
-
-
-
-    svg_document = svgwrite.Drawing(filename='output/map.svg', size=(str(8000)+'px', str(8000)+'px'))
-    for way in ways:
-        printed_nodes = []
-        for nodeID in way:
-            if nodeID in nodes:
-                nodes[nodeID]['used'] = True
-                printed_nodes.append((convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
-                                                         float(nodes[nodeID]['lon']) - float(bounds['minlon']))))
-        svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='black', stroke_width=0.5))
-
-    # for nodeID in nodes:
-    #     if nodes[nodeID]['used']:
-    #         svg_document.add(svgwrite.shapes.Circle(
-    #             center=(convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
-    #                                         float(nodes[nodeID]['lon']) - float(bounds['minlon']))), r=1, fill='red'))
-    # svg_document.save()
-
-    # print('Svg write time: ', time() - svg_time)
-    # print('Executing...')
-
     adj_list_time = time()
 
-    adj_list = write_adj_list(nodes, ways)
+    adj_list = generateAdjList(nodes, ways)
+
+    with open('result/adjacency_list.csv', 'w') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Node', 'Adjacent nodes'])
+        for ID in adj_list:
+            writer.writerow([ID] + [[int(node) for node in adj_list[ID]]])
 
     print('Adj list write time: ', time() - adj_list_time)
     print('Executing...')
 
-    for nodeID in adj_list:
-        if nodeID in nodes and nodes[nodeID]['used']:
-            svg_document.add(svgwrite.shapes.Circle(
-                center=(convertCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
-                                           float(nodes[nodeID]['lon']) - float(bounds['minlon']))), r=1, fill='red'))
+    svg_time = time()
 
+    svg_document = svgwrite.Drawing(filename='result/map.svg', size=('6000px', '2000px'))
+    for wayID in ways:
+        printed_nodes = []
+        for nodeID in ways[wayID]:
+            if nodeID in nodes:
+                nodes[nodeID]['used'] = True
+                printed_nodes.append((transformCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
+                                                         float(nodes[nodeID]['lon']) - float(bounds['minlon']))))
+        svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='black', stroke_width=0.5))
+
+    # for nodeID in adj_list:
+    #     if nodeID in nodes and nodes[nodeID]['used']:
+    #         svg_document.add(svgwrite.shapes.Circle(
+    #             center=(transformCoordinates(float(nodes[nodeID]['lat']) - float(bounds['minlat']),
+    #                                          float(nodes[nodeID]['lon']) - float(bounds['minlon']))), r=1, fill='red'))
     svg_document.save()
+
+    print('Svg write time: ', time() - svg_time)
+    print('Executing...')
+
     adj_matrix_time = time()
 
     fieldnames = list(adj_list.keys())
 
-    # with open('output/adjacency_matrix.csv', 'w') as csvfile:
-    #     writer = csv.DictWriter(csvfile, fieldnames=[''] + fieldnames)
-    #
-    #     writer.writeheader()
-    #     for node in fieldnames:
-    #         written_row = {neighbour: (1 if neighbour in adj_list[node] else 0) for neighbour in fieldnames}
-    #         written_row[''] = node
-    #         writer.writerow(written_row)
-    #
-    # print('Adj matrix time: {} min'.format((time() - adj_matrix_time) / 60))
+    with open('result/adjacency_matrix.csv', 'w') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=[''] + fieldnames)
+
+        writer.writeheader()
+        for node in fieldnames:
+            written_row = {neighbour: (1 if neighbour in adj_list[node] else 0) for neighbour in fieldnames}
+            written_row[''] = node
+            writer.writerow(written_row)
+
+    print('Adj matrix time: ', time() - adj_matrix_time)
 
 
 if __name__ == "__main__":
