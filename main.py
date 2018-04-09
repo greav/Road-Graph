@@ -9,7 +9,7 @@ import os
 import haversine
 import heapq
 import collections
-
+from queue import Queue
 
 class PriorityQueue:
     def __init__(self):
@@ -25,10 +25,162 @@ class PriorityQueue:
         return heapq.heappop(self.elements)[1]
 
 
-class Graph:
-    def __init__(self, nodes, adj_list):
+class GraphOSM:
+    def __init__(self):
+        self.nodes = {}
+        self.ways = {}
+        self.bounds = {}
+        self._neighbors = {}
+        self.hospitals = []
+        self.svg_document = None
+
+    def parse(self, file):
+        # bounds = {}     # {'minlat': str, 'minlon': str, 'maxlat': str, 'maxlon': str}
+        # nodes = {}  # {'id': {'lat': str, 'lon': str, used: bool, ways: []}}
+        # ways = {}  # {'id': []}
+        # hospitals = []
+        highways = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary',
+                    'primary_link', 'secondary', 'secondary_link', 'tertiary',
+                    'tertiary_link', 'unclassified', 'road', 'residential']
+
+        for _, element in etree.iterparse(file, tag=['bounds', 'node', 'way']):
+            if element.tag == 'bounds':
+                self.bounds['minlat'] = float(element.get('minlat'))
+                self.bounds['minlon'] = float(element.get('minlon'))
+                self.bounds['maxlat'] = float(element.get('maxlat'))
+                self.bounds['maxlon'] = float(element.get('maxlon'))
+            elif element.tag == 'node':
+                nodeID = element.get('id')
+                self.nodes[nodeID] = {'lat': float(element.get('lat')), 'lon': float(element.get('lon')),
+                                 'used': False, 'ways': []}
+                for child in element.iter('tag'):
+                    value = child.get('v')
+                    if value == 'hospital':
+                        self.hospitals.append(nodeID)
+                        break
+                    else:
+                        continue
+
+            elif element.tag == 'way':
+                wayID = element.get('id')
+                lst_nodesID = []
+                for child in element.iter('nd', 'tag'):
+                    if child.tag == 'nd':
+                        childID = child.get('ref')
+                        if childID not in self.nodes:
+                            continue
+                        lst_nodesID.append(childID)
+                    elif child.tag == 'tag' and child.get('k') == 'highway' and child.get('v') in highways:
+                        for nodeID in lst_nodesID:
+                            if nodeID in self.nodes:
+                                self.nodes[nodeID]['ways'].append(wayID)
+                        self.ways[wayID] = lst_nodesID
+
+            element.clear()
+
+    def generate_short_adjList(self):
+        adj_list = {}
+
+        for wayID in self.ways:
+            for nodeID in self.ways[wayID]:
+                # если узла нет в списке узлов, то переходим к следующему узлу
+                if nodeID not in self.nodes:
+                    continue
+                if len(self.nodes[nodeID]['ways']) == 1:
+                    index = self.ways[wayID].index(nodeID)
+                    if index == 0:
+                        adj_list[nodeID] = {self.ways[wayID][-1]}
+
+                    elif index == (len(self.ways[wayID]) - 1):
+                        adj_list[nodeID] = {self.ways[wayID][0]}
+                elif len(self.nodes[nodeID]['ways']) > 1:
+                    for wayID2 in self.nodes[nodeID]['ways']:
+                        if wayID2 != wayID:
+                            index = self.ways[wayID2].index(nodeID)
+                            # left_neighbour, right_neighbour = ways[wayID2][index-1:index], ways[wayID2][index+1:index+2]
+                            for neighbour in self.ways[wayID2][index - 1::-1]:
+                                if neighbour in self.nodes and len(self.nodes[neighbour]['ways']) > 1:
+                                    if nodeID not in adj_list:
+                                        adj_list[nodeID] = set()
+                                        adj_list[nodeID].add(neighbour)
+                                    else:
+                                        adj_list[nodeID].add(neighbour)
+                                    break
+                                else:
+                                    continue
+
+                            for neighbour in self.ways[wayID2][index + 1:]:
+                                if neighbour in self.nodes and len(self.nodes[neighbour]['ways']) > 1:
+                                    if nodeID not in adj_list:
+                                        adj_list[nodeID] = set()
+                                        adj_list[nodeID].add(neighbour)
+                                    else:
+                                        adj_list[nodeID].add(neighbour)
+                                    break
+                                else:
+                                    continue
+
         self._neighbors = adj_list
-        self.nodes = nodes
+
+    def generate_adjlist(self):
+        adj_list = collections.defaultdict(set)
+
+        for wayID in self.ways:
+
+            if len(self.ways[wayID]) < 2:
+                continue
+
+            adj_list[self.ways[wayID][0]].add(self.ways[wayID][1])
+
+            i = 1
+            while i < len(self.ways[wayID]) - 1:
+                adj_list[self.ways[wayID][i]].add(self.ways[wayID][i - 1])
+                adj_list[self.ways[wayID][i]].add(self.ways[wayID][i + 1])
+                i += 1
+
+            adj_list[self.ways[wayID][i]].add(self.ways[wayID][i - 1])
+
+        self._neighbors = adj_list
+
+    def adjlist_to_csv(self, filename='adjacency_list.csv'):
+        if not os.path.exists('result'):
+            os.makedirs('result')
+        with open('result/' + filename, 'w') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['Node', 'Adjacent nodes'])
+            for ID in self._neighbors:
+                writer.writerow([ID] + [[int(node) for node in self._neighbors[ID]]])
+
+    def adjmatrix_to_csv(self, filename='adjacency_matrix.csv'):
+        if not os.path.exists('result'):
+            os.makedirs('result')
+
+        fieldnames = list(self._neighbors.keys())
+
+        with open('result/' + filename, 'w') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=[''] + fieldnames)
+
+            writer.writeheader()
+            for node in fieldnames:
+                write_line = {neighbour: (1 if neighbour in self._neighbors[node] else 0) for neighbour in fieldnames}
+                write_line[''] = node
+                writer.writerow(write_line)
+
+    def create_svgmap(self, filename='map.svg'):
+        if not os.path.exists('result'):
+            os.makedirs('result')
+
+        x_px, y_px = self.transform_coordinates(self.bounds['minlat'], self.bounds['maxlon'])
+        self.svg_document = svgwrite.Drawing(filename='result/' + filename, size=(str(x_px), str(y_px)))
+
+        for wayID in self.ways:
+            printed_nodes = []
+            for nodeID in self.ways[wayID]:
+                if nodeID in self.nodes:
+                    self.nodes[nodeID]['used'] = True
+                    printed_nodes.append((self.transform_coordinates(self.nodes[nodeID]['lat'],
+                                                                     self.nodes[nodeID]['lon'])))
+            self.svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='black', stroke_width=0.5))
 
     def connect(self, node1, node2):
         self._neighbors[node1].add(node2)
@@ -57,12 +209,54 @@ class Graph:
 
         return min_node_id
 
-    def dijkstra(self, start, goal):
-        origin = self.closest_node(start)
-        destination = self.closest_node(goal)
+    # def dijkstra(self, start, goal):
+    #     # origin = self.closest_node(start)
+    #     origin = start
+    #     # destination = self.closest_node(goal)
+    #     destination = goal
+    #     priority_queue = PriorityQueue()
+    #     priority_queue.put(origin, 0)
+    #
+    #     came_from = {}
+    #     came_from[origin] = None
+    #     came_from[destination] = None
+    #
+    #     cost = collections.defaultdict(lambda: float('inf'))
+    #     cost[origin] = 0
+    #
+    #     while not priority_queue.empty():
+    #         current = priority_queue.get()
+    #
+    #         if current == destination:
+    #             break
+    #
+    #         for next in self.neighbors(current):
+    #             new_cost = cost[current] + self.get_distance(current, next)
+    #             if new_cost < cost[next]:
+    #                 cost[next] = new_cost
+    #                 priority = new_cost
+    #                 priority_queue.put(next, priority)
+    #                 came_from[next] = current
+    #
+    #     if not came_from[destination]:
+    #         return float('inf'), []
+    #
+    #     current = destination
+    #     path = [current]
+    #     while current != origin:
+    #         current = came_from[current]
+    #         path.append(current)
+    #     path.reverse()
+    #
+    #     path = [start] + path + [goal]
+    #     distance = cost[destination] # + self.get_distance(start, origin) + self.get_distance(destination, goal)
+    #     return distance, path
 
-        priority_queue = PriorityQueue()
-        priority_queue.put(origin, 0)
+    def dijkstra(self, start, goal):
+        origin = start
+        destination = goal
+        priority_queue = []
+        heapq.heappush(priority_queue, (0, origin))
 
         came_from = {}
         came_from[origin] = None
@@ -71,8 +265,8 @@ class Graph:
         cost = collections.defaultdict(lambda: float('inf'))
         cost[origin] = 0
 
-        while not priority_queue.empty():
-            current = priority_queue.get()
+        while priority_queue:
+            current = heapq.heappop(priority_queue)[1]
 
             if current == destination:
                 break
@@ -82,12 +276,11 @@ class Graph:
                 if new_cost < cost[next]:
                     cost[next] = new_cost
                     priority = new_cost
-                    priority_queue.put(next, priority)
+                    heapq.heappush(priority_queue, (priority, next))
                     came_from[next] = current
 
         if not came_from[destination]:
-            print('No solution')
-            return float('inf'), None
+            return float('inf'), []
 
         current = destination
         path = [current]
@@ -96,46 +289,51 @@ class Graph:
             path.append(current)
         path.reverse()
 
-        path = [start] + path + [goal]
-        distance = cost[destination] + self.get_distance(start, origin) + self.get_distance(destination, goal)
-
+        # path = [start] + path + [goal]
+        distance = cost[destination] # + self.get_distance(start, origin) + self.get_distance(destination, goal)
         return distance, path
 
-    def levit(self, start, goal):
-        origin = self.closest_node(start)
-        destination = self.closest_node(goal)
 
+    def levit(self, start, goal):
+        origin = start
+        destination = goal
         cost = collections.defaultdict(lambda: float('inf'))
         cost[origin] = 0
 
         state = collections.defaultdict(lambda: 2)
-        state[origin] = 1
 
-        queue = collections.deque()
-        queue.append(origin)
+        primary_queue = Queue()
+        urgent_queue = Queue()
+
+        primary_queue.put(origin)
+        state[origin] = 1
 
         came_from = {}
         came_from[origin] = None
         came_from[destination] = None
 
-        while queue:
-            current = queue.popleft()
+        while not primary_queue.empty() or not urgent_queue.empty():
+            current = primary_queue.get() if urgent_queue.empty() else urgent_queue.get()
             state[current] = 0
             for next in self.neighbors(current):
                 length = self.get_distance(current, next)
-                #self.heuristic(current, next)
-                if cost[next] > cost[current] + length:
-                    cost[next] = cost[current] + length
-                    if state[next] == 2:
-                        queue.append(next)
-                    elif state[next] == 0:
-                        queue.appendleft(next)
-                    came_from[next] = current
+                if state[next] == 2:
+                    primary_queue.put(next)
                     state[next] = 1
+                    if cost[current] + length < cost[next]:
+                        came_from[next] = current
+                        cost[next] = cost[current] + length
+                elif state[next] == 1 and cost[current] + length < cost[next]:
+                        came_from[next] = current
+                        cost[next] = cost[current] + length
+                elif state[next] == 0 and cost[next] > cost[current] + length:
+                    urgent_queue.put(next)
+                    state[next] = 1
+                    cost[next] = cost[current] + length
+                    came_from[next] = current
 
         if not came_from[destination]:
-            print('No solution')
-            return float('inf'), None
+            return float('inf'), []
 
         current = destination
         path = [current]
@@ -144,26 +342,26 @@ class Graph:
             path.append(current)
         path.reverse()
 
-        path = [start] + path + [goal]
-        distance = cost[destination] + self.get_distance(start, origin) + self.get_distance(destination, goal)
-
+        # path = [start] + path + [goal]
+        distance = cost[destination] #+ self.get_distance(start, origin) + self.get_distance(destination, goal)
         return distance, path
 
     def heuristic(self, a, b, *, type_heuristic='Euclid'):
-        (x1, y1) = to_equirect_project(float(self.nodes[a]['lat']), float(self.nodes[a]['lon']))
-        (x2, y2) = to_equirect_project(float(self.nodes[b]['lat']), float(self.nodes[b]['lon']))
+        (x1, y1) = self.to_equirect_project(self.nodes[a]['lat'], self.nodes[a]['lon'])
+        (x2, y2) = self.to_equirect_project(self.nodes[b]['lat'], self.nodes[b]['lon'])
 
         if type_heuristic == 'Manhattan':
             return abs(x1 - x2) + abs(y1 - y2)
-
         elif type_heuristic == 'Euclid':
             return sqrt((x1 - x2)**2 + (y1 - y2)**2)
         elif type_heuristic == 'Chebyshev':
             return max(abs(x1 - x2), abs(y1 - y2))
 
     def a_star(self, start, goal, *, type_heuristic='Euclid'):
-        origin = self.closest_node(start)
-        destination = self.closest_node(goal)
+        # origin = self.closest_node(start)
+        # destination = self.closest_node(goal)
+        origin = start
+        destination = goal
 
         priority_queue = PriorityQueue()
         priority_queue.put(origin, 0)
@@ -190,8 +388,7 @@ class Graph:
                     came_from[next] = current
 
         if not came_from[destination]:
-            print('No solution')
-            return float('inf'), None
+            return float('inf'), []
 
         current = destination
         path = [current]
@@ -205,145 +402,45 @@ class Graph:
 
         return distance, path
 
+    def to_equirect_project(self, lat, lon):
+        radius = 6371
 
-bounds = {}
+        lat_rad = (self.bounds['maxlat'] - lat) * pi / 180
+        lon_rad = (lon - self.bounds['minlon']) * pi / 180
 
+        min_lat = self.bounds['maxlat'] * pi / 180
 
-def to_equirect_project(lat, lon):
-    radius = 6371
+        x = lon_rad * cos(min_lat) * radius
+        y = lat_rad * radius
 
-    lat_rad = (float(bounds['maxlat']) - lat) * pi / 180
-    lon_rad = (lon - float(bounds['minlon'])) * pi / 180
+        return x, y
 
-    min_lat = float(bounds['maxlat']) * pi / 180
+    def transform_coordinates(self, lat, lon, *, multiplier=60):
+        x, y = self.to_equirect_project(lat, lon)
+        x *= multiplier
+        y *= multiplier
+        return x, y
 
-    x = lon_rad * cos(min_lat) * radius
-    y = lat_rad * radius
-
-    return x, y
-
-
-def transform_coordinates(lat, lon, *, multiplier=60):
-    x, y = to_equirect_project(lat, lon)
-    x *= multiplier
-    y *= multiplier
-    return x, y
-
-
-def parse(file):
-    # bounds = {}     # {'minlat': str, 'minlon': str, 'maxlat': str, 'maxlon': str}
-    global bounds
-    nodes = {}      # {'id': {'lat': str, 'lon': str, used: bool, ways: []}}
-    ways = {}       # {'id': []}
-    hospitals = []
-    # highways = ['motorway', 'trunk', 'primary', 'secondary', 'tertiary',
-    #             'unclassified', 'residential', 'road']
-    highways = ["motorway", "motorway_link", "trunk", "trunk_link", "primary",
-                "primary_link", "secondary", "secondary_link", "tertiary",
-                "tertiary_link", "unclassified", "road", "residential", 'service']
-    for _, element in etree.iterparse(file, tag=['bounds', 'node', 'way']):
-        if element.tag == 'bounds':
-            bounds['minlat'] = float(element.get('minlat'))
-            bounds['minlon'] = float(element.get('minlon'))
-            bounds['maxlat'] = float(element.get('maxlat'))
-            bounds['maxlon'] = float(element.get('maxlon'))
-        elif element.tag == 'node':
-            nodeID = element.get('id')
-            nodes[nodeID] = {'lat': float(element.get('lat')), 'lon': float(element.get('lon')),
-                             'used': False, 'ways': []}
-            for child in element.iter('tag'):
-                value = child.get('v')
-                if value == 'hospital':
-                    hospitals.append(nodeID)
-                    break
-                else:
-                    continue
-
-        elif element.tag == 'way':
-            wayID = element.get('id')
-            lst_nodesID = []
-            for child in element.iter('nd', 'tag'):
-                if child.tag == 'nd':
-                    childID = child.get('ref')
-                    if childID not in nodes:
-                        continue
-                    lst_nodesID.append(childID)
-                elif child.tag == 'tag' and child.get('k') == 'highway' and child.get('v') in highways:
-                    for nodeID in lst_nodesID:
-                        if nodeID in nodes:
-                            nodes[nodeID]['ways'].append(wayID)
-                    ways[wayID] = lst_nodesID
-
-        element.clear()
-
-    return bounds, nodes, ways, hospitals
+    def draw_route(self, route, *, color='black', stroke_width=1):
+        printed_nodes = []
+        for node in route:
+            printed_nodes.append((self.transform_coordinates(self.nodes[node]['lat'],
+                                                             self.nodes[node]['lon'])))
+        self.svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke=color, stroke_width=stroke_width))
 
 
-def generate_short_adjList(nodes, ways):
-    adj_list = {}
-
-    for wayID in ways:
-        for nodeID in ways[wayID]:
-            # если узла нет в списке узлов, то переходим к следующему узлу
-            if nodeID not in nodes:
-                continue
-            if len(nodes[nodeID]['ways']) == 1:
-                index = ways[wayID].index(nodeID)
-                if index == 0:
-                    adj_list[nodeID] = {ways[wayID][-1]}
-
-                elif index == (len(ways[wayID]) - 1):
-                    adj_list[nodeID] = {ways[wayID][0]}
-            elif len(nodes[nodeID]['ways']) > 1:
-                for wayID2 in nodes[nodeID]['ways']:
-                    if wayID2 != wayID:
-                        index = ways[wayID2].index(nodeID)
-                        # left_neighbour, right_neighbour = ways[wayID2][index-1:index], ways[wayID2][index+1:index+2]
-                        for neighbour in ways[wayID2][index-1::-1]:
-                            if neighbour in nodes and len(nodes[neighbour]['ways']) > 1:
-                                if nodeID not in adj_list:
-                                    adj_list[nodeID] = set()
-                                    adj_list[nodeID].add(neighbour)
-                                else:
-                                    adj_list[nodeID].add(neighbour)
-                                break
-                            else:
-                                continue
-
-                        for neighbour in ways[wayID2][index + 1:]:
-                            if neighbour in nodes and len(nodes[neighbour]['ways']) > 1:
-                                if nodeID not in adj_list:
-                                    adj_list[nodeID] = set()
-                                    adj_list[nodeID].add(neighbour)
-                                else:
-                                    adj_list[nodeID].add(neighbour)
-                                break
-                            else:
-                                continue
-
-    return adj_list
-
-
-def generate_adjlist(ways):
-    adj_list = collections.defaultdict(set)
-
-    for wayID in ways:
-
-        if len(ways[wayID]) < 2:
+def coordinate_input(lat_range=(-90, 90), lon_range=(-180, 180)):
+    min_lat, max_lat = lat_range
+    min_lon, max_lon = lon_range
+    while True:
+        lat = float(input('Enter latitude ({0} < lat < {1}): '.format(min_lat, max_lat)))
+        lon = float(input('Enter longitude ({0} < lon < {1}): '.format(min_lon, max_lon)))
+        if (lat < min_lat or lat > max_lat or
+            lon < min_lon or lon > max_lon):
+            print('Wrong input!\nTry again', end='\n\n')
             continue
-
-        adj_list[ways[wayID][0]].add(ways[wayID][1])
-
-        i = 1
-        while i < len(ways[wayID]) - 1:
-            adj_list[ways[wayID][i]].add(ways[wayID][i - 1])
-            adj_list[ways[wayID][i]].add(ways[wayID][i + 1])
-            i += 1
-
-        adj_list[ways[wayID][i]].add(ways[wayID][i - 1])
-
-    return adj_list
-
+        else:
+            return lat, lon
 
 def main():
 
@@ -354,195 +451,149 @@ def main():
     else:
         file = sys.argv[1]
 
-    if not os.path.exists('result'):
-        os.makedirs('result')
-
     file = 'krasnodar.osm'
 
+    city = GraphOSM()
 
-    parse_time = time()
-
-    bounds, nodes, ways, hospitals = parse(file)
-
-
-
-
-    print('Parse time: ', time() - parse_time)
-    print('Executing...')
-
-    #example 45.1359, 39.0088
-
-    while True:
-        lat = float(input('Enter latitude ({0} < lat < {1}): '.format(bounds['minlat'], bounds['maxlat'])))
-        lon = float(input('Enter longitude ({0} < lon < {1}): '.format(bounds['minlon'], bounds['maxlon'])))
-        if (lat < bounds['minlat'] or lat > bounds['maxlat'] or
-            lon < bounds['minlon'] or lon > bounds['maxlon']):
-            print('Wrong input!\nTry again', end='\n\n')
-            continue
-        else:
-            break
-
-    # lat, lon = 45.1359, 39.0088
-
-    adj_list_time = time()
-
-    adj_list = generate_adjlist(ways)
-
-    with open('result/adjacency_list.csv', 'w') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(['Node', 'Adjacent nodes'])
-        for ID in adj_list:
-            writer.writerow([ID] + [[int(node) for node in adj_list[ID]]])
-
-    print('Adj list write time: ', time() - adj_list_time)
-    print('Executing...')
-
-    svg_time = time()
-
-    xpx, ypx = transform_coordinates(float(bounds['minlat']), float(bounds['maxlon']))
-
-    svg_document = svgwrite.Drawing(filename='result/map.svg', size=(str(xpx), str(ypx)))
+    city.parse(file)
+    city.generate_adjlist()
+    city.create_svgmap()
 
 
+    # lat, lon = coordinate_input((city.bounds['minlat'], city.bounds['maxlat']),
+    #                             (city.bounds['minlon'], city.bounds['maxlon']))
 
+    lat, lon = 45.1208, 38.9263
 
-    for wayID in ways:
-        printed_nodes = []
-        for nodeID in ways[wayID]:
-            if nodeID in nodes:
-                nodes[nodeID]['used'] = True
-                printed_nodes.append((transform_coordinates(float(nodes[nodeID]['lat']),
-                                                         float(nodes[nodeID]['lon']))))
-        svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='black', stroke_width=0.5))
-
-
-    print('Svg write time: ', time() - svg_time)
-    print('Executing...')
-
-    # adj_matrix_time = time()
-    #
-    # fieldnames = list(adj_list.keys())
-    #
-    # with open('result/adjacency_matrix.csv', 'w') as csvfile:
-    #     writer = csv.DictWriter(csvfile, fieldnames=[''] + fieldnames)
-    #
-    #     writer.writeheader()
-    #     for node in fieldnames:
-    #         written_row = {neighbour: (1 if neighbour in adj_list[node] else 0) for neighbour in fieldnames}
-    #         written_row[''] = node
-    #         writer.writerow(written_row)
-    #
-    # print('Adj matrix time: ', time() - adj_matrix_time)
-
-
-
-    city = Graph(nodes, adj_list)
-
-    origin = '000000'
+    origin = 0
     city.nodes[origin] = {'lat': lat, 'lon': lon}
+    closest_node = city.closest_node(origin)
+    city.connect(origin, closest_node)
 
-    hospitals = hospitals[:10]
+    hospitals = city.hospitals[:10]
+    for hospital in hospitals:
+        # city.nodes[hospital]['used'] = True
+        closest_node = city.closest_node(hospital)
+        city.connect(hospital, closest_node)
 
     destination = hospitals[4]
-    print(nodes[destination])
+    print(city.nodes[destination])
 
     dijkstra_routes = []
     a_star_routes = []
     levit_routes = []
 
-    # for destination in hospitals:
-    #     dijkstra_distance, dijkstra_path = city.dijkstra(origin, destination)
-    #     dijkstra_routes.append((dijkstra_distance, dijkstra_path))
-    #     a_star_distance, a_star_path = city.a_star(origin, destination, type_heuristic='Manhattan')
-    #     a_star_routes.append((a_star_distance, a_star_path))
-    #     # levit_distance, levit_path = city.dijkstra(origin, destination)
-    #     # levit_routes.append((levit_distance, levit_path))
+    for destination in hospitals:
+        start_time = time()
+        dijkstra_distance, dijkstra_path = city.dijkstra(origin, destination)
+        print('dijkstra time: ', time() - start_time)
+        dijkstra_routes.append((dijkstra_distance, dijkstra_path))
+        # a_star_distance, a_star_path = city.a_star(origin, destination, type_heuristic='Chebyshev')
+        # a_star_routes.append((a_star_distance, a_star_path))
+        start_time = time()
+        levit_distance, levit_path = city.levit(origin, destination)
+        print('levit time: ', time() - start_time)
+        levit_routes.append((levit_distance, levit_path))
+        print('dijkstra dist == levit dist ?', dijkstra_distance == levit_distance)
+        print('dijkstra path == levit path ?', dijkstra_path == levit_path)
 
 
 
-    # dijkstra_routes.sort()
+    dijkstra_routes.sort()
     # a_star_routes.sort()
-
-    # for route in dijkstra_routes:
-    #     print(route)
+    # levit_routes.sort()
     #
-    # print('*'*20)
+    # print('Dijkstra routes == A star routes?', dijkstra_routes == a_star_routes)
+    # print('Dijkstra routes == Levit routes?', dijkstra_routes == levit_routes)
+    # print('Levit routes == A star routes?', levit_routes == a_star_routes)
+
+    with open('result/routes.csv', 'w') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Start', 'Destination', 'Route'])
+        for _, route in dijkstra_routes:
+            start_end = [(lat, lon), (city.nodes[route[-1]]['lat'], city.nodes[route[-1]]['lon'])]
+            row = start_end + [[(city.nodes[node]['lat'], city.nodes[node]['lon']) for node in route]]
+            writer.writerow(row)
+
+    for route in dijkstra_routes[1:]:
+        city.draw_route(route[1], color='red', stroke_width=1)
+
+    city.draw_route(dijkstra_routes[0][1], color='green', stroke_width=2)
+
+    city.svg_document.add(svgwrite.shapes.Circle(
+                           center=(city.transform_coordinates(city.nodes[origin]['lat'],
+                                                              city.nodes[origin]['lon'])), r=3, fill='blue'))
+
+    for hospital in hospitals:
+        city.svg_document.add(svgwrite.shapes.Circle(
+                            center=(city.transform_coordinates(city.nodes[hospital]['lat'],
+                                                               city.nodes[hospital]['lon'])), r=3, fill='red'))
+
+
+
+
+    keys = [node for node in city._neighbors
+            if haversine.haversine((lat, lon), (city.nodes[node]['lat'], city.nodes[node]['lon'])) >= 4]
+    keys = random.sample(keys, 100)
+
+    # for key in keys:
+    #     city.svg_document.add(svgwrite.shapes.Circle(
+    #         center=(city.transform_coordinates(city.nodes[key]['lat'],
+    #                                            city.nodes[key]['lon'])), r=3, fill='orange'))
+
+    dijk_times, lev_times, astar_times = [], [], []
+
+    print('Number\tDistance\tDijkstra\tLevit\t\tAstar')
+
+    for i, key in enumerate(keys):
+        start_time = time()
+        dijkstra_distance, dijkstra_path = city.dijkstra(origin, key)
+        dijkstra_time = time() - start_time
+        dijk_times.append(dijkstra_time)
+
+        start_time = time()
+        levit_distance, levit_path = city.levit(origin, key)
+        levit_time = time() - start_time
+        lev_times.append(levit_time)
+
+
+        start_time = time()
+        a_star_distance, a_star_path = city.a_star(origin, key, type_heuristic='Euclid')
+        a_star_time = time() - start_time
+        astar_times.append(a_star_time)
+
+        print("{0}\t\t{1:.3f}\t\t{2:.3f}\t\t{3:.3f}\t\t{4:.3f}".format(i + 1, dijkstra_distance, dijkstra_time, levit_time, a_star_time))
+
+    print('Max dijkstra time:', max(dijk_times))
+    print('Min dijkstra time:', min(dijk_times))
+
+    print('Max levit time:', max(lev_times))
+    print('Min levit time:', min(lev_times))
+
+    print('Max astar time:', max(astar_times))
+    print('Min astar time:', min(astar_times))
+
+    # print('\nTesting heuristic functions in A*\n')
+    # print('Number\tDistance\tEuclid\tDistance\tChebyshev\tDistance\tManhattan')
     #
-    # for route in a_star_routes:
-    #     print(route)
+    # for i, key in enumerate(keys):
+    #     start_time = time()
+    #     euclid_distance, a_star_path = city.a_star(origin, key, type_heuristic='Euclid')
+    #     euclid_time = time() - start_time
     #
-    # print('*'*20)
+    #     start_time = time()
+    #     chebyshev_distance, a_star_path = city.a_star(origin, key, type_heuristic='Chebyshev')
+    #     chebyshev_time = time() - start_time
+    #
+    #     start_time = time()
+    #     manhattan_distance, a_star_path = city.a_star(origin, key, type_heuristic='Manhattan')
+    #     manhattan_time = time() - start_time
+    #
+    #     print("{0}\t\t{1:.3f}\t\t{2:.3f}\t{3:.3f}\t\t{4:.3f}\t\t{5:.3f}\t\t{6:.3f}".format(
+    #      i + 1, euclid_distance, euclid_time, chebyshev_distance, chebyshev_time, manhattan_distance, manhattan_time))
     #
     #
-    # #
-    # # for i in range(len(dijkstra_routes)):
-    # #     print(i + 1, '==>', dijkstra_routes == levit_routes)
-    #
-    # for i in range(len(dijkstra_routes)):
-    #     print(i+1, '==>', dijkstra_routes[i] == a_star_routes[i])
-
-
-    # for route in a_star_routes[1:]:
-    #     printed_nodes = []
-    #     for node in route[1]:
-    #         printed_nodes.append((transform_coordinates(float(nodes[node]['lat']),
-    #                                                    float(nodes[node]['lon']))))
-    #     svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='red', stroke_width=1))
-    #
-    # printed_nodes = []
-    # for node in a_star_routes[0][1]:
-    #     printed_nodes.append((transform_coordinates(float(nodes[node]['lat']),
-    #                                                float(nodes[node]['lon']))))
-    # svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='green', stroke_width=2))
-    #
-    # svg_document.add(svgwrite.shapes.Circle(
-    #                     center=(transform_coordinates(float(nodes[origin]['lat']),
-    #                                                  float(nodes[origin]['lon']))), r=5, fill='blue'))
-    #
-    # for hospital in hospitals:
-    #     svg_document.add(svgwrite.shapes.Circle(
-    #                         center=(transform_coordinates(float(nodes[hospital]['lat']),
-    #                                                      float(nodes[hospital]['lon']))), r=5, fill='red'))
-
-
-    keys = random.sample(list(adj_list), 100)
-    for key in keys:
-        svg_document.add(svgwrite.shapes.Circle(
-            center=(transform_coordinates(float(nodes[key]['lat']),
-                                         float(nodes[key]['lon']))), r=3, fill='orange'))
-
-    dijkstra_distance, dijkstra_path = city.dijkstra(origin, destination)
-    a_star_distance, a_star_path = city.a_star(origin, destination, type_heuristic='Manhattan')
-    levit_distance, levit_path = city.dijkstra(origin, destination)
-
-    print('Dikstra == levit?', dijkstra_path == levit_path)
-    print('Dikstra == astar?', dijkstra_path == a_star_path)
-    print('Astar   == levit?', a_star_path == levit_path)
-
-    print('Dikstra dist', dijkstra_distance)
-    print('astar dist?', a_star_distance)
-    print('levit dist?', levit_distance)
-
-    print('Dikstra dist == levit dist?', dijkstra_distance == levit_distance)
-    print('Dikstra dist == astar dist?', dijkstra_distance == a_star_distance)
-    print('Astar dist == levit dist?', a_star_distance == levit_distance)
-
-    printed_nodes = []
-    for node in dijkstra_path:
-        printed_nodes.append((transform_coordinates(float(nodes[node]['lat']),
-                                                   float(nodes[node]['lon']))))
-    svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke='blue', stroke_width=1))
-
-    printed_nodes2 = []
-    for node in a_star_path:
-        printed_nodes2.append((transform_coordinates(float(nodes[node]['lat']),
-                                                    float(nodes[node]['lon']))))
-    svg_document.add(svgwrite.shapes.Polyline(printed_nodes2, fill='none', stroke='green', stroke_width=2))
-
-
-    svg_document.save()
-
-
+    city.svg_document.save()
 
 
 if __name__ == "__main__":
