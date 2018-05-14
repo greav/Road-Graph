@@ -14,7 +14,7 @@ from collections import namedtuple
 
 
 
-Edge = namedtuple('Edge', ['start_node', 'end_node', 'weight', 'path'])
+Edge = namedtuple('Edge', ['start_node', 'end_node', 'weight'])
 
 
 class GraphOSM:
@@ -29,7 +29,6 @@ class GraphOSM:
         self.bounds = {}
         self._neighbors = {}
         self.hospitals = []
-        self.tsp_distance_list = []
         self.svg_document = None
 
     def parse(self, file):
@@ -397,7 +396,7 @@ class GraphOSM:
 
         return closest_hospital, best_distance
 
-    def tsp(self, map_hospitals, hospitals):
+    def tsp_nearest_neighbour(self, map_hospitals, hospitals):
         order = []
         order.append(hospitals[0])
 
@@ -412,49 +411,27 @@ class GraphOSM:
             length += dist
             order.append(next_)
 
+        order.append(order[0])
+        distance, _path = map_hospitals[order[-2]][order[-1]]
+        length += distance
 
         return order, length
 
-    # def tsp(self, hospitals):
-    #     order = []
-    #     order.append(hospitals[0])
-    #
-    #     length = 0
-    #
-    #     next_, dist = self.get_closest(order[0], hospitals, order)
-    #     length += dist
-    #     order.append(next_)
-    #
-    #     while len(order) < len(hospitals):
-    #         next_, dist = self.get_closest(next_, hospitals, order)
-    #         length += dist
-    #         order.append(next_)
-    #
-    #     return order, length
+    def generate_tsp_distance_matrix(self, nodes):
+        edge_list = []
+        path_matrix = {}
 
-
-
-    def delete_node(self, node):
-        for closest_node in self._neighbors[node]:
-            del self._neighbors[closest_node]
-            for key in self._neighbors:
-                if closest_node in self._neighbors[key] and key != node:
-                    # self._neighbors[key].remove(closest_node)
-                    self._neighbors[key] = set()
-        del self._neighbors[node]
-
-    def distance_matrix(self, hospitals):
-        result = []
-        for start in hospitals:
-            for end in hospitals:
+        for start in nodes:
+            path_matrix[start] = {}
+            for end in nodes:
                 if start != end:
                     distance, path = self.a_star(start, end)
-                    result.append(Edge(start, end, distance, path))
-        return result
+                    edge_list.append(Edge(start, end, distance))
+                    path_matrix[start][end] = distance, path
+        return edge_list, path_matrix
 
-    def min_spanning_tree(self, root, hospitals):
+    def min_spanning_tree(self, root, hospitals, edges):
         result = []
-        edges = self.distance_matrix([root] + hospitals)
         edges.sort(key=lambda edge: edge.weight)
 
         selected_nodes = [root]
@@ -464,30 +441,18 @@ class GraphOSM:
                     result.append(edge)
                     selected_nodes.append(edge.end_node)
                     break
-        sum_ = 0
-        for edge in result:
-            sum_ += edge.weight
 
         return result
 
-    def double_min_spanning_tree(self, root, hospitals):
+    def tsp_double_min_spanning_tree(self, root, hospitals, path_matrix, edges):
         path = [root]
+        length = 0
         double_span_tree = []
-        for edge in self.min_spanning_tree(root, hospitals):
+        for edge in self.min_spanning_tree(root, hospitals, edges):
             double_span_tree.append(edge)
             reverse_edge = Edge(edge.end_node, edge.start_node, edge.weight)
             double_span_tree.append(reverse_edge)
-        # cur_node = path[-1]
-        # while double_span_tree:
-        #     print(len(double_span_tree))
-        #     for edge in double_span_tree:
-        #         if edge.start_node == cur_node and edge.end_node not in path:
-        #             path.append(edge.end_node)
-        #             cur_node = edge.end_node
-        #             double_span_tree.remove(edge)
-        #         elif edge.start_node == cur_node and edge.end_node in path:
-        #             cur_node = edge.end_node
-        #             double_span_tree.remove(edge)
+
         stack = [root]
         while stack:
             w = stack[-1]
@@ -501,7 +466,14 @@ class GraphOSM:
                 if node not in path:
                     path.append(node)
 
-        return path
+        path.append(path[0])
+        i = 0
+        while i < len(path) - 1:
+            distance, _path = path_matrix[path[i]][path[i + 1]]
+            length += distance
+            i += 1
+
+        return path, length
 
 
 def coordinate_input(lat_range=(-90, 90), lon_range=(-180, 180)):
@@ -701,6 +673,7 @@ def main():
     #                             (city.bounds['minlon'], city.bounds['maxlon']))
 
     lat, lon = 45.1166, 38.9885
+    # lat, lon = 45.0278, 39.0743
 
     origin = 0
     city.nodes[origin] = {'lat': lat, 'lon': lon}
@@ -712,69 +685,66 @@ def main():
         closest_node = city.closest_node(hospital)
         city.connect(hospital, closest_node)
 
-    map_hopsitals = {}
+    tsp_edge_list, tsp_path_matrix = city.generate_tsp_distance_matrix([origin] + hospitals)
 
-    for start in [origin] + hospitals:
-        map_hopsitals[start] = {}
-        for end in [origin] + hospitals:
-            if start != end:
-                map_hopsitals[start][end] = city.a_star(start, end)
+    cycle, length = city.tsp_nearest_neighbour(tsp_path_matrix, [origin] + hospitals)
 
-    order, length = city.tsp(map_hopsitals, [origin] + hospitals)
-
-    # order, length = city.tsp([origin] + hospitals)
-
-    print(order)
-    print(length)
-
+    print('cycle:')
+    print(cycle)
+    print('NNA distance: ', length)
 
     printed_routes = []
     i = 0
-    # dist = 0
-    while i < len(order) - 1:
-        distance, path = city.a_star(order[i], order[i + 1])
-        # dist += distance
+    while i < len(cycle) - 1:
+        _distance, path = tsp_path_matrix[cycle[i]][cycle[i + 1]]
         printed_routes.append(path)
-        if i != 0 and i != len(order) - 1:
-            # city.delete_node(order[i])
-            pass
         i += 1
 
-    _distance, path = city.a_star(order[-1], order[0])
-    # dist += _distance
-    print('NNA distance: ', length)
-    printed_routes.append(path)
+
+    with open('result/nna_routes.csv', 'w') as csvfile:
+        writer = csv.writer(csvfile)
+        for route in printed_routes:
+            writer.writerow(route)
+
+    city.create_svgmap('svgmap_tsp_nna2.svg')
 
     for route in printed_routes:
-        print(route)
-
-    city.create_svgmap('svgmap_tsp_nna.svg')
-
-    for route in printed_routes[:-1]:
         city.draw_route(route, color='red', stroke_width=1)
 
-    city.draw_route(printed_routes[-1], color='green', stroke_width=1)
 
-    # i = 0
-    # while i < len(order) - 1:
-    #     city.draw_route(map_hopsitals[order[i]][order[i + 1]][1], color='red', stroke_width=1)
-    #     i += 1
-    # city.draw_route(map_hopsitals[order[0]][order[-1]][1], color='green', stroke_width=1)
-    #
-    # for hospital in order[1:-1]:
-    #     city.svg_document.add(svgwrite.shapes.Circle(
-    #                         center=(city.transform_coordinates(city.nodes[hospital]['lat'],
-    #                                                            city.nodes[hospital]['lon'])), r=3, fill='red'))
-    # city.svg_document.add(svgwrite.shapes.Circle(
-    #     center=(city.transform_coordinates(city.nodes[order[0]]['lat'],
-    #                                        city.nodes[order[0]]['lon'])), r=3, fill='green'))
-    # city.svg_document.add(svgwrite.shapes.Circle(
-    #     center=(city.transform_coordinates(city.nodes[order[-1]]['lat'],
-    #                                        city.nodes[order[-1]]['lon'])), r=3, fill='green'))
+    for i, hospital in enumerate(cycle[:-1], start=1):
+        city.svg_document.add(svgwrite.shapes.Circle(
+            center=(city.transform_coordinates(city.nodes[hospital]['lat'],
+                                               city.nodes[hospital]['lon'])), r=3, fill='red'))
+        city.svg_document.add(city.svg_document.text(i,
+                                                     insert=(city.transform_coordinates(city.nodes[hospital]['lat'],
+                                                                                        city.nodes[hospital]['lon'])), ))
+    city.svg_document.save()
 
-    # city.draw_route(map_hopsitals[order[0]][order[-1]][1], color='green', stroke_width=1)
 
-    for i, hospital in enumerate(order, start=1):
+    cycle, length2 = city.tsp_double_min_spanning_tree(origin, hospitals, tsp_path_matrix, tsp_edge_list)
+
+    print(cycle)
+    print('DMTS distance:', length2)
+
+    printed_routes = []
+    i = 0
+    while i < len(cycle) - 1:
+        _distance, path = tsp_path_matrix[cycle[i]][cycle[i + 1]]
+        printed_routes.append(path)
+        i += 1
+
+    with open('result/dmst_routes.csv', 'w') as csvfile:
+        writer = csv.writer(csvfile)
+        for route in printed_routes:
+            writer.writerow(route)
+
+    city.create_svgmap('svgmap_dmts_dmts2.svg')
+
+    for route in printed_routes:
+        city.draw_route(route, color='red', stroke_width=1)
+
+    for i, hospital in enumerate(cycle[:-1], start=1):
         city.svg_document.add(svgwrite.shapes.Circle(
             center=(city.transform_coordinates(city.nodes[hospital]['lat'],
                                                city.nodes[hospital]['lon'])), r=3, fill='red'))
@@ -782,7 +752,6 @@ def main():
                                                      insert=(city.transform_coordinates(city.nodes[hospital]['lat'],
                                                                                         city.nodes[hospital][
                                                                                             'lon'])), ))
-
     city.svg_document.save()
 
     print('Finished!')
@@ -814,7 +783,9 @@ def main2():
         closest_node = city.closest_node(hospital)
         city.connect(hospital, closest_node)
 
-    order = city.double_min_spanning_tree(origin, hospitals)
+
+    tsp_edge_list, tsp_path_matrix = city.generate_tsp_distance_matrix([origin] + hospitals)
+    order, length = city.tsp_double_min_spanning_tree(origin, hospitals, tsp_path_matrix)
     print(order)
 
     printed_routes = []
@@ -823,52 +794,6 @@ def main2():
         _distance, path = city.a_star(order[i], order[i + 1])
         printed_routes.append(path)
         i += 1
-
-    _distance, path = city.a_star(order[-1], order[0])
-    printed_routes.append(path)
-
-    for route in printed_routes:
-        print(route)
-
-    city.create_svgmap('svgmap_tsp_dmst.svg')
-
-    for route in printed_routes[:-1]:
-        city.draw_route(route, color='red', stroke_width=1)
-
-    city.draw_route(printed_routes[-1], color='green', stroke_width=1)
-
-    # i = 0
-    # while i < len(order) - 1:
-    #     city.draw_route(map_hopsitals[order[i]][order[i + 1]][1], color='red', stroke_width=1)
-    #     i += 1
-    # city.draw_route(map_hopsitals[order[0]][order[-1]][1], color='green', stroke_width=1)
-    #
-    # for hospital in order[1:-1]:
-    #     city.svg_document.add(svgwrite.shapes.Circle(
-    #                         center=(city.transform_coordinates(city.nodes[hospital]['lat'],
-    #                                                            city.nodes[hospital]['lon'])), r=3, fill='red'))
-    # city.svg_document.add(svgwrite.shapes.Circle(
-    #     center=(city.transform_coordinates(city.nodes[order[0]]['lat'],
-    #                                        city.nodes[order[0]]['lon'])), r=3, fill='green'))
-    # city.svg_document.add(svgwrite.shapes.Circle(
-    #     center=(city.transform_coordinates(city.nodes[order[-1]]['lat'],
-    #                                        city.nodes[order[-1]]['lon'])), r=3, fill='green'))
-
-    # city.draw_route(map_hopsitals[order[0]][order[-1]][1], color='green', stroke_width=1)
-
-    for i, hospital in enumerate(order, start=1):
-        city.svg_document.add(svgwrite.shapes.Circle(
-            center=(city.transform_coordinates(city.nodes[hospital]['lat'],
-                                               city.nodes[hospital]['lon'])), r=3, fill='red'))
-        city.svg_document.add(city.svg_document.text(i,
-                                                     insert=(city.transform_coordinates(city.nodes[hospital]['lat'],
-                                                                                        city.nodes[hospital][
-                                                                                            'lon'])), ))
-
-    city.svg_document.save()
-
-    print('Finished!')
-    print('Total time: {0:.3f}'.format(time() - main_time))
 
 
 if __name__ == "__main__":
