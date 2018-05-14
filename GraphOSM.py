@@ -1,17 +1,13 @@
-from lxml import etree
-from time import time
-from math import pi, sqrt, cos
-from queue import Queue
-import random
-import svgwrite
 import csv
-import sys
+import svgwrite
 import os
 import haversine
 import heapq
 import collections
 from collections import namedtuple
-
+from lxml import etree
+from math import pi, sqrt, cos
+from queue import Queue
 
 
 Edge = namedtuple('Edge', ['start_node', 'end_node', 'weight'])
@@ -361,28 +357,6 @@ class GraphOSM:
                                                              self.nodes[node]['lon'])))
         self.svg_document.add(svgwrite.shapes.Polyline(printed_nodes, fill='none', stroke=color, stroke_width=stroke_width))
 
-    # def get_closest(self, hospital, hospitals, visited):
-    #     best_distance = float('inf')
-    #
-    #     # for h in map_hospitals:
-    #     #
-    #     #     if h not in visited:
-    #     #         distance, _path = map_hospitals[hospital][h]
-    #     #         if distance < best_distance:
-    #     #             closest_hospital = h
-    #     #             best_distance = distance
-    #
-    #
-    #     for h in hospitals:
-    #
-    #         if h not in visited:
-    #             distance = self.get_distance(hospital, h)
-    #             if distance < best_distance:
-    #                 closest_hospital = h
-    #                 best_distance = distance
-    #
-    #     return closest_hospital, best_distance
-
     def get_closest(self, hospital, map_hospitals, visited):
         best_distance = float('inf')
 
@@ -455,13 +429,13 @@ class GraphOSM:
 
         stack = [root]
         while stack:
-            w = stack[-1]
+            cur_node = stack[-1]
             for edge in double_span_tree:
-                if edge.start_node == w:
+                if edge.start_node == cur_node:
                     stack.append(edge.end_node)
                     double_span_tree.remove(edge)
                     break
-            if w == stack[-1]:
+            if cur_node == stack[-1]:
                 node = stack.pop()
                 if node not in path:
                     path.append(node)
@@ -490,310 +464,8 @@ def coordinate_input(lat_range=(-90, 90), lon_range=(-180, 180)):
             return lat, lon
 
 
-class Logger():
-    def __init__(self):
-        self.terminal = sys.stdout
-        self.log = open("result/testing.txt", "a")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-
-    def flush(self):
-        pass
-
-    def close(self):
-        self.log.close()
-
-
-def task2():
-    main_time = time()
-    print('Executing...')
-
-    if len(sys.argv) == 1:
-        print('There are no input data!')
-        sys.exit()
-    else:
-        file = sys.argv[1]
-
-    city = GraphOSM()
-
-    city.parse(file)
-    city.generate_adjlist()
-    city.create_svgmap('map_with_routes.svg')
-
-    lat, lon = coordinate_input((city.bounds['minlat'], city.bounds['maxlat']),
-                                (city.bounds['minlon'], city.bounds['maxlon']))
-
-    origin = 0
-    city.nodes[origin] = {'lat': lat, 'lon': lon}
-    closest_node = city.closest_node(origin)
-    city.connect(origin, closest_node)
-
-    hospitals = city.hospitals[:10]
-    for hospital in hospitals:
-        closest_node = city.closest_node(hospital)
-        city.connect(hospital, closest_node)
-
-    dijkstra_routes = []
-
-    for destination in hospitals:
-        dijkstra_distance, dijkstra_path = city.dijkstra(origin, destination)
-        dijkstra_routes.append((dijkstra_distance, dijkstra_path))
-
-    dijkstra_routes.sort()
-
-    with open('result/routes_with_coords.csv', 'w') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(['Start', 'Destination', 'Route'])
-        for _, route in dijkstra_routes:
-            start_end = [(lat, lon), (city.nodes[route[-1]]['lat'], city.nodes[route[-1]]['lon'])]
-            row = start_end + [[(city.nodes[node]['lat'], city.nodes[node]['lon']) for node in route]]
-            writer.writerow(row)
-
-    with open('result/routes.csv', 'w') as csvfile:
-        writer = csv.writer(csvfile)
-        for _, route in dijkstra_routes:
-            writer.writerow(route)
-
-    for route in dijkstra_routes[1:]:
-        city.draw_route(route[1], color='red', stroke_width=1)
-
-    city.draw_route(dijkstra_routes[0][1], color='green', stroke_width=2)
-
-    city.svg_document.add(svgwrite.shapes.Circle(
-                           center=(city.transform_coordinates(city.nodes[origin]['lat'],
-                                                              city.nodes[origin]['lon'])), r=3, fill='blue'))
-
-    for hospital in hospitals:
-        city.svg_document.add(svgwrite.shapes.Circle(
-                            center=(city.transform_coordinates(city.nodes[hospital]['lat'],
-                                                               city.nodes[hospital]['lon'])), r=3, fill='red'))
-
-    city.svg_document.save()
-
-    starting_points = random.sample(list(city._neighbors), 100)
-    dijkstra_total_time, levit_total_time, a_star_total_time = 0, 0, 0
-    all_dijkstra_distances, all_levit_distances, all_astar_distances = [], [], []
-    dijkstra_err, levit_err, a_euclid_err, a_manhattan_err, a_chebyshev_err = 0, 0, 0, 0, 0
-    destination = hospitals[0]
-
-    temp = sys.stdout
-    sys.stdout = Logger()
-
-    print('Number\tDistance\tDijkstra\tLevit\t\tAstar_Euclid\t\tAstar_Cheb\t\tAstar_Manhat')
-
-    for i, point in enumerate(starting_points):
-        start_time = time()
-        dijkstra_distance, dijkstra_path = city.dijkstra(point, destination)
-        dijkstra_time = time() - start_time
-        dijkstra_total_time += dijkstra_time
-        all_dijkstra_distances.append(dijkstra_distance)
-
-        start_time = time()
-        levit_distance, levit_path = city.levit(point, destination)
-        levit_time = time() - start_time
-        levit_total_time += levit_time
-        all_levit_distances.append(levit_distance)
-
-        start_time = time()
-        a_star_distance, a_star_path = city.a_star(point, destination, type_heuristic='Euclid')
-        a_star_time = time() - start_time
-        a_star_total_time += a_star_time
-        all_astar_distances.append(a_star_distance)
-
-        start_time = time()
-        a_star_cheb_distance, a_star_cheb_path = city.a_star(point, destination, type_heuristic='Chebyshev')
-        a_star_cheb_time = time() - start_time
-
-        start_time = time()
-        a_star_manhat_distance, a_star_manhat_path = city.a_star(point, destination, type_heuristic='Manhattan')
-        a_star_manhat_time = time() - start_time
-
-        print("{0}\t\t{1:.3f}\t\t{2:.3f}\t\t{3:.3f}\t\t{4:.3f}\t\t\t\t{5:.3f}\t\t\t{6:.3f}".format(i + 1,
-              dijkstra_distance, dijkstra_time, levit_time, a_star_time, a_star_cheb_time, a_star_manhat_time))
-
-        exact_distance = min(dijkstra_distance, levit_distance)
-        if exact_distance != float('inf'):
-            dijkstra_err += dijkstra_distance/exact_distance - 1
-            levit_err += levit_distance/exact_distance - 1
-            a_euclid_err += a_star_distance/exact_distance - 1
-            a_chebyshev_err += a_star_cheb_distance/exact_distance - 1
-            a_manhattan_err += a_star_manhat_distance/exact_distance - 1
-
-    print('\nDijkstra total time: {0:.3f} sec'.format(dijkstra_total_time))
-    print('Levit total time: {0:.3f} sec'.format(levit_total_time))
-    print('Astar total time: {0:.3f} sec'.format(a_star_total_time))
-
-    try:
-        all_dijkstra_distances.remove(float('inf'))
-        all_levit_distances.remove(float('inf'))
-        all_astar_distances.remove(float('inf'))
-    except ValueError:
-        pass
-
-    n = len(all_dijkstra_distances)
-
-    print('\nAverage dijkstra error: {0:.1f}%'.format(dijkstra_err * 100 / n))
-    print('Average levit error: {0:.1f}%'.format(levit_err * 100 / n))
-    print('Average astar (Euclid) error: {0:.1f}%'.format(a_euclid_err * 100 / n))
-    print('Average astar (Chebyshev) error: {0:.1f}%'.format(a_chebyshev_err * 100 / n))
-    print('Average astar (Manhattan) error: {0:.1f}%'.format(a_manhattan_err * 100 / n))
-
-    print('\nDijkstra average arrival time: {0:.3f} min'.format(sum(all_dijkstra_distances)/len(all_dijkstra_distances)/40*60))
-    print('Levit average arrival time: {0:.3f} min'.format(sum(all_levit_distances)/len(all_levit_distances)/40*60))
-    print('Astar average arrival time: {0:.3f} min'.format(sum(all_astar_distances)/len(all_astar_distances)/40*60))
-
-    sys.stdout.close()
-    sys.stdout = temp
-
-    print('Finished!')
-    print('Total time: {0:.3f}'.format(time() - main_time))
-
-
 def main():
-    main_time = time()
-    print('Executing...')
-
-    if len(sys.argv) == 1:
-        # print('There are no input data!')
-        # sys.exit()
-        pass
-    else:
-        file = sys.argv[1]
-
-    file = 'krasnodar.osm'
-
-    city = GraphOSM()
-
-    city.parse(file)
-    city.generate_adjlist()
-
-    # lat, lon = coordinate_input((city.bounds['minlat'], city.bounds['maxlat']),
-    #                             (city.bounds['minlon'], city.bounds['maxlon']))
-
-    lat, lon = 45.1166, 38.9885
-    # lat, lon = 45.0278, 39.0743
-
-    origin = 0
-    city.nodes[origin] = {'lat': lat, 'lon': lon}
-    closest_node = city.closest_node(origin)
-    city.connect(origin, closest_node)
-
-    hospitals = city.hospitals[:6] + city.hospitals[7:11]
-    for hospital in hospitals:
-        closest_node = city.closest_node(hospital)
-        city.connect(hospital, closest_node)
-
-    tsp_edge_list, tsp_path_matrix = city.generate_tsp_distance_matrix([origin] + hospitals)
-
-    cycle, length = city.tsp_nearest_neighbour(tsp_path_matrix, [origin] + hospitals)
-
-    print('cycle:')
-    print(cycle)
-    print('NNA distance: ', length)
-
-    printed_routes = []
-    i = 0
-    while i < len(cycle) - 1:
-        _distance, path = tsp_path_matrix[cycle[i]][cycle[i + 1]]
-        printed_routes.append(path)
-        i += 1
-
-
-    with open('result/nna_routes.csv', 'w') as csvfile:
-        writer = csv.writer(csvfile)
-        for route in printed_routes:
-            writer.writerow(route)
-
-    city.create_svgmap('svgmap_tsp_nna2.svg')
-
-    for route in printed_routes:
-        city.draw_route(route, color='red', stroke_width=1)
-
-
-    for i, hospital in enumerate(cycle[:-1], start=1):
-        city.svg_document.add(svgwrite.shapes.Circle(
-            center=(city.transform_coordinates(city.nodes[hospital]['lat'],
-                                               city.nodes[hospital]['lon'])), r=3, fill='red'))
-        city.svg_document.add(city.svg_document.text(i,
-                                                     insert=(city.transform_coordinates(city.nodes[hospital]['lat'],
-                                                                                        city.nodes[hospital]['lon'])), ))
-    city.svg_document.save()
-
-
-    cycle, length2 = city.tsp_double_min_spanning_tree(origin, hospitals, tsp_path_matrix, tsp_edge_list)
-
-    print(cycle)
-    print('DMTS distance:', length2)
-
-    printed_routes = []
-    i = 0
-    while i < len(cycle) - 1:
-        _distance, path = tsp_path_matrix[cycle[i]][cycle[i + 1]]
-        printed_routes.append(path)
-        i += 1
-
-    with open('result/dmst_routes.csv', 'w') as csvfile:
-        writer = csv.writer(csvfile)
-        for route in printed_routes:
-            writer.writerow(route)
-
-    city.create_svgmap('svgmap_dmts_dmts2.svg')
-
-    for route in printed_routes:
-        city.draw_route(route, color='red', stroke_width=1)
-
-    for i, hospital in enumerate(cycle[:-1], start=1):
-        city.svg_document.add(svgwrite.shapes.Circle(
-            center=(city.transform_coordinates(city.nodes[hospital]['lat'],
-                                               city.nodes[hospital]['lon'])), r=3, fill='red'))
-        city.svg_document.add(city.svg_document.text(i,
-                                                     insert=(city.transform_coordinates(city.nodes[hospital]['lat'],
-                                                                                        city.nodes[hospital][
-                                                                                            'lon'])), ))
-    city.svg_document.save()
-
-    print('Finished!')
-    print('Total time: {0:.3f}'.format(time() - main_time))
-
-
-def main2():
-    main_time = time()
-    print('Executing...')
-    file = 'krasnodar.osm'
-
-    city = GraphOSM()
-
-    city.parse(file)
-    city.generate_adjlist()
-
-    # lat, lon = coordinate_input((city.bounds['minlat'], city.bounds['maxlat']),
-    #                             (city.bounds['minlon'], city.bounds['maxlon']))
-
-    lat, lon = 45.1166, 38.9885
-
-    origin = 0
-    city.nodes[origin] = {'lat': lat, 'lon': lon}
-    closest_node = city.closest_node(origin)
-    city.connect(origin, closest_node)
-
-    hospitals = city.hospitals[:6] + city.hospitals[7:11]
-    for hospital in hospitals:
-        closest_node = city.closest_node(hospital)
-        city.connect(hospital, closest_node)
-
-
-    tsp_edge_list, tsp_path_matrix = city.generate_tsp_distance_matrix([origin] + hospitals)
-    order, length = city.tsp_double_min_spanning_tree(origin, hospitals, tsp_path_matrix)
-    print(order)
-
-    printed_routes = []
-    i = 0
-    while i < len(order) - 1:
-        _distance, path = city.a_star(order[i], order[i + 1])
-        printed_routes.append(path)
-        i += 1
+    print('Nothing to run')
 
 
 if __name__ == "__main__":
